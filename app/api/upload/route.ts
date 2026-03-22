@@ -50,7 +50,7 @@ export async function POST(request: Request) {
       fullText = Array.isArray(text) ? text.join(' ') : text;
 
     } else if (mimeType.startsWith("image/")) {
-      const visionModel = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite" });
+      const visionModel = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
       const base64Data = Buffer.from(buffer).toString("base64");
       const result = await visionModel.generateContent([
         "Extrais et retranscris tout le texte visible dans cette image. Décris aussi le contexte.",

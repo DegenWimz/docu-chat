@@ -4,7 +4,7 @@
 
 ## 🌐 Version Live
 
-Testez la démo ici : [https://doc-chat-degenwimz.vercel.app](https://www.google.com/search?q=https://doc-chat-degenwimz.vercel.app)
+Testez la démo ici : [https://docu-chat-alpha.vercel.app/login](https://docu-chat-alpha.vercel.app/login)
 
 ## ⚠️ Confidentialité & Sécurité
 

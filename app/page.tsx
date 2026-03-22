@@ -4,7 +4,6 @@ import { useState, useRef, useEffect } from "react";
 import { createBrowserClient } from '@supabase/ssr';
 import { useRouter } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
-// Étape 1 : Import des icônes Lucide
 import { 
   Plus, 
   Send, 
@@ -15,7 +14,9 @@ import {
   Loader2,
   User,
   MessageSquare,
-  Sparkles
+  Sparkles,
+  Pencil,
+  Check
 } from 'lucide-react';
 
 interface FileHistory {
@@ -36,19 +37,22 @@ export default function Home() {
   const [user, setUser] = useState<any>(null);
   const [files, setFiles] = useState<FileHistory[]>([]);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null); 
+  
+  // NOUVEAU : États d'édition
+  const [editingFileId, setEditingFileId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+
   const [isUploading, setIsUploading] = useState(false);
   const [uploadMessage, setUploadMessage] = useState("");
   const [messages, setMessages] = useState<{ role: "user" | "ai"; text: string }[]>([]);
   const [input, setInput] = useState("");
   const [isLoadingChat, setIsLoadingChat] = useState(false);
 
-  // 1. Auth & Session
   useEffect(() => {
     const checkSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        router.push('/login');
-      } else {
+      if (!session) router.push('/login');
+      else {
         setUser(session.user);
         fetchHistory();
       }
@@ -63,22 +67,14 @@ export default function Home() {
     return () => subscription.unsubscribe();
   }, [router, supabase]);
 
-  // 2. Historique
   const fetchHistory = async () => {
-    const { data, error } = await supabase
-      .from('documents')
-      .select('file_id, file_name')
-      .order('id', { ascending: false });
-
+    const { data } = await supabase.from('documents').select('file_id, file_name').order('id', { ascending: false });
     if (data) {
-      const uniqueFiles = data.filter((v, i, a) => 
-        a.findIndex(t => t.file_id === v.file_id) === i
-      );
+      const uniqueFiles = data.filter((v, i, a) => a.findIndex(t => t.file_id === v.file_id) === i);
       setFiles(uniqueFiles);
     }
   };
 
-  // 3. Suppression
   const deleteFile = async (fileId: string) => {
     if (!confirm("Effacer ce document ?")) return;
     const { error } = await supabase.from('documents').delete().eq('file_id', fileId);
@@ -88,12 +84,39 @@ export default function Home() {
     }
   };
 
+  // NOUVEAU : Renommer le fichier dans Supabase
+  const handleRename = async (fileId: string) => {
+    if (!editName.trim()) {
+      setEditingFileId(null);
+      return;
+    }
+    
+    const { error } = await supabase
+      .from('documents')
+      .update({ file_name: editName })
+      .eq('file_id', fileId);
+
+    if (!error) {
+      setFiles(files.map(f => f.file_id === fileId ? { ...f, file_name: editName } : f));
+    } else {
+      console.error("Erreur lors du renommage :", error);
+    }
+    setEditingFileId(null);
+  };
+
+  // NOUVEAU : Activer le mode édition
+  const startEditing = (f: FileHistory, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditName(f.file_name);
+    setEditingFileId(f.file_id);
+  };
+
   const handleLogout = async () => {
     await supabase.auth.signOut();
     router.push('/login');
   };
 
-  // 4. Upload (Accepte PDF + Images)
+  // MODIFIÉ : Accepte tout type de fichier
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -110,7 +133,8 @@ export default function Home() {
         setUploadMessage("✅ Mémorisé !");
         fetchHistory(); 
       } else {
-        setUploadMessage("❌ Erreur");
+        const errData = await response.json();
+        setUploadMessage("❌ " + (errData.error || "Erreur"));
       }
     } catch (e) {
       setUploadMessage("❌ Erreur serveur");
@@ -120,7 +144,6 @@ export default function Home() {
     }
   };
 
-  // 5. CHAT AVEC STREAMING (La grande nouveauté)
   const handleSendMessage = async () => {
     if (!input.trim() || isLoadingChat) return;
 
@@ -129,7 +152,6 @@ export default function Home() {
     setMessages((prev) => [...prev, { role: "user", text: userMsg }]);
     setIsLoadingChat(true);
 
-    // On ajoute un message vide pour l'IA qu'on va remplir
     setMessages((prev) => [...prev, { role: "ai", text: "" }]);
 
     try {
@@ -152,7 +174,6 @@ export default function Home() {
         const chunk = decoder.decode(value);
         accumulatedText += chunk;
         
-        // Mise à jour temps réel du dernier message
         setMessages((prev) => {
           const updated = [...prev];
           updated[updated.length - 1].text = accumulatedText;
@@ -177,8 +198,7 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-50 flex font-sans">
       
-      {/* --- SIDEBAR --- */}
-      <aside className="w-72 border-r border-neutral-800 bg-neutral-900/40 flex flex-col p-6">
+      <aside className="w-80 border-r border-neutral-800 bg-neutral-900/40 flex flex-col p-6">
         <div className="mb-10">
           <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent flex items-center gap-2">
             <MessageSquare className="text-blue-500 w-6 h-6" /> DocuChat
@@ -186,15 +206,16 @@ export default function Home() {
           <p className="text-[10px] text-neutral-500 uppercase tracking-widest mt-1 font-bold">Vibe Coder Edition</p>
         </div>
 
+        {/* MODIFIÉ : L'attribut accept a été retiré */}
         <button 
           onClick={() => fileInputRef.current?.click()}
           disabled={isUploading}
           className="w-full mb-8 py-3 px-4 bg-blue-600 hover:bg-blue-500 disabled:bg-neutral-800 rounded-2xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-900/20"
         >
           {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-          {isUploading ? "Analyse..." : "Nouveau PDF / Image"}
+          {isUploading ? "Analyse..." : "Ajouter un fichier"}
         </button>
-        <input type="file" accept=".pdf,image/*" className="hidden" ref={fileInputRef} onChange={handleFileChange} />
+        <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileChange} />
 
         <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar">
           <p className="text-[11px] text-neutral-600 font-bold px-2 mb-4">BIBLIOTHÈQUE</p>
@@ -206,20 +227,51 @@ export default function Home() {
             <Globe className="w-4 h-4" /> Vue globale
           </button>
 
+          {/* MODIFIÉ : Interface de liste avec mode édition */}
           {files.map((f) => (
-            <div key={f.file_id} className="group relative">
-              <button 
-                onClick={() => setSelectedFileId(f.file_id)}
-                className={`w-full text-left px-4 py-3 rounded-xl text-xs truncate pr-10 transition-all flex items-center gap-3 ${selectedFileId === f.file_id ? 'bg-emerald-600/10 text-emerald-400 border border-emerald-900/30' : 'hover:bg-neutral-800/50 text-neutral-400'}`}
-              >
-                <FileText className="w-4 h-4" /> {f.file_name}
-              </button>
-              <button 
-                onClick={(e) => { e.stopPropagation(); deleteFile(f.file_id); }}
-                className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 p-1 hover:text-red-500 transition-all"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+            <div key={f.file_id} className="group relative flex items-center w-full">
+              {editingFileId === f.file_id ? (
+                <div className="flex w-full items-center gap-2 px-2 py-2 bg-neutral-800/80 rounded-xl border border-blue-500/50">
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleRename(f.file_id)}
+                    className="flex-1 bg-transparent text-xs text-white outline-none"
+                    autoFocus
+                  />
+                  <button onClick={() => handleRename(f.file_id)} className="text-emerald-400 hover:text-emerald-300">
+                    <Check className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <button 
+                    onClick={() => setSelectedFileId(f.file_id)}
+                    className={`flex-1 text-left px-4 py-3 rounded-xl text-xs truncate transition-all flex items-center gap-3 ${selectedFileId === f.file_id ? 'bg-emerald-600/10 text-emerald-400 border border-emerald-900/30' : 'hover:bg-neutral-800/50 text-neutral-400'}`}
+                  >
+                    <FileText className="w-4 h-4 shrink-0" /> 
+                    <span className="truncate pr-16">{f.file_name}</span>
+                  </button>
+                  
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all bg-neutral-900/80 backdrop-blur-sm p-1 rounded-lg">
+                    <button 
+                      onClick={(e) => startEditing(f, e)}
+                      className="p-1.5 text-blue-400 hover:text-blue-300 hover:bg-blue-400/10 rounded-md transition-colors"
+                      title="Renommer"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); deleteFile(f.file_id); }}
+                      className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded-md transition-colors"
+                      title="Supprimer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           ))}
         </div>
@@ -237,7 +289,6 @@ export default function Home() {
         </div>
       </aside>
 
-      {/* --- CHAT AREA --- */}
       <section className="flex-1 flex flex-col h-screen bg-neutral-950">
         
         <header className="px-8 py-6 border-b border-neutral-900 flex justify-between items-center bg-neutral-950/80 backdrop-blur-md">

@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { extractText } from 'unpdf';
+import mammoth from 'mammoth';
+import * as xlsx from 'xlsx';
 import { GoogleGenerativeAI, TaskType } from "@google/generative-ai";
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
@@ -35,36 +37,49 @@ export async function POST(request: Request) {
     const fileId = crypto.randomUUID();
     const fileName = file.name;
     const buffer = await file.arrayBuffer();
-
+    
+    // On récupère l'extension pour choisir le bon outil
+    const extension = fileName.split('.').pop()?.toLowerCase() || '';
+    const mimeType = file.type;
+    
     let fullText = "";
 
-    // --- 🔀 AIGUILLAGE : PDF vs IMAGE ---
-    if (file.type === "application/pdf") {
-      // Cas 1 : C'est un PDF, on utilise ta méthode classique (unpdf)
+    // --- 🔀 AIGUILLAGE UNIVERSEL ---
+    if (mimeType === "application/pdf" || extension === "pdf") {
       const { text } = await extractText(new Uint8Array(buffer));
       fullText = Array.isArray(text) ? text.join(' ') : text;
-      
-    } else if (file.type.startsWith("image/")) {
-      // Cas 2 : C'est une Image, on demande à Gemini Vision de la lire
-      const visionModel = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
+
+    } else if (mimeType.startsWith("image/")) {
+      const visionModel = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite" });
       const base64Data = Buffer.from(buffer).toString("base64");
-      
-      const prompt = "Décris cette image en détail. Si elle contient du texte (capture d'écran, document scanné, facture...), retranscris-le le plus fidèlement possible.";
-      
       const result = await visionModel.generateContent([
-        prompt,
+        "Extrais et retranscris tout le texte visible dans cette image. Décris aussi le contexte.",
         { inlineData: { data: base64Data, mimeType: file.type } }
       ]);
       fullText = result.response.text();
-      
+
+    } else if (extension === "docx") {
+      // Lecture Word
+      const result = await mammoth.extractRawText({ buffer: Buffer.from(buffer) });
+      fullText = result.value;
+
+    } else if (extension === "xlsx" || extension === "csv" || mimeType.includes("spreadsheet")) {
+      // Lecture Excel / CSV
+      const workbook = xlsx.read(buffer, { type: 'buffer' });
+      const sheetNames = workbook.SheetNames;
+      for (const sheetName of sheetNames) {
+        const sheet = workbook.Sheets[sheetName];
+        fullText += xlsx.utils.sheet_to_csv(sheet) + "\n";
+      }
+
     } else {
-      // Sécurité : On bloque les autres formats (Word, Excel, etc.)
-      return NextResponse.json({ error: "Format non supporté (PDF ou Image uniquement)" }, { status: 400 });
+      // Pour tout le reste (txt, md, js, py, css, html, json...)
+      // On convertit directement les octets en texte
+      fullText = Buffer.from(buffer).toString("utf-8");
     }
 
-    // Sécurité : Si l'image ou le PDF est vide
     if (!fullText || fullText.trim().length === 0) {
-      return NextResponse.json({ error: "Aucun texte n'a pu être extrait." }, { status: 400 });
+      return NextResponse.json({ error: "Le fichier semble vide ou illisible." }, { status: 400 });
     }
 
     // --- ✂️ DÉCOUPAGE ET MÉMORISATION ---
@@ -94,7 +109,7 @@ export async function POST(request: Request) {
       if (error) throw error;
     }
 
-    return NextResponse.json({ success: true, message: `Document "${fileName}" mémorisé.` });
+    return NextResponse.json({ success: true, message: `Document mémorisé.` });
 
   } catch (error) {
     console.error("Erreur Upload:", error);

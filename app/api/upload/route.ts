@@ -95,3 +95,9 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json({ success: true, message: `Document "${fileName}" mémorisé.` });
+
+  } catch (error) {
+    console.error("Erreur Upload:", error);
+    return NextResponse.json({ error: "Erreur d'upload" }, { status: 500 });
+  }
+}

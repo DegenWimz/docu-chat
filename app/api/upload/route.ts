@@ -34,18 +34,46 @@ export async function POST(request: Request) {
 
     const fileId = crypto.randomUUID();
     const fileName = file.name;
-
     const buffer = await file.arrayBuffer();
-    const { text } = await extractText(new Uint8Array(buffer));
-    const fullText = Array.isArray(text) ? text.join(' ') : text;
-    const chunks = fullText.match(/[\s\S]{1,1000}/g) || [];
 
+    let fullText = "";
+
+    // --- 🔀 AIGUILLAGE : PDF vs IMAGE ---
+    if (file.type === "application/pdf") {
+      // Cas 1 : C'est un PDF, on utilise ta méthode classique (unpdf)
+      const { text } = await extractText(new Uint8Array(buffer));
+      fullText = Array.isArray(text) ? text.join(' ') : text;
+      
+    } else if (file.type.startsWith("image/")) {
+      // Cas 2 : C'est une Image, on demande à Gemini Vision de la lire
+      const visionModel = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite" });
+      const base64Data = Buffer.from(buffer).toString("base64");
+      
+      const prompt = "Décris cette image en détail. Si elle contient du texte (capture d'écran, document scanné, facture...), retranscris-le le plus fidèlement possible.";
+      
+      const result = await visionModel.generateContent([
+        prompt,
+        { inlineData: { data: base64Data, mimeType: file.type } }
+      ]);
+      fullText = result.response.text();
+      
+    } else {
+      // Sécurité : On bloque les autres formats (Word, Excel, etc.)
+      return NextResponse.json({ error: "Format non supporté (PDF ou Image uniquement)" }, { status: 400 });
+    }
+
+    // Sécurité : Si l'image ou le PDF est vide
+    if (!fullText || fullText.trim().length === 0) {
+      return NextResponse.json({ error: "Aucun texte n'a pu être extrait." }, { status: 400 });
+    }
+
+    // --- ✂️ DÉCOUPAGE ET MÉMORISATION ---
+    const chunks = fullText.match(/[\s\S]{1,1000}/g) || [];
     const model = genAI.getGenerativeModel({ model: "gemini-embedding-2-preview" });
 
     for (const chunk of chunks) {
       if (!chunk.trim()) continue;
 
-      // On utilise "as any" pour forcer TypeScript à accepter outputDimensionality
       const result = await model.embedContent({
         content: { parts: [{ text: chunk }], role: 'user' },
         taskType: TaskType.RETRIEVAL_DOCUMENT,
@@ -67,9 +95,3 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json({ success: true, message: `Document "${fileName}" mémorisé.` });
-
-  } catch (error) {
-    console.error("Erreur Upload:", error);
-    return NextResponse.json({ error: "Erreur d'upload" }, { status: 500 });
-  }
-}

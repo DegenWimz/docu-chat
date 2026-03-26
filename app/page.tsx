@@ -121,26 +121,27 @@ export default function Home() {
   };
 
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+    const selectedFiles = Array.from(event.target.files || []);
+    if (selectedFiles.length === 0) return;
 
     setIsUploading(true);
-    setUploadMessage("Analyse...");
-
-    const formData = new FormData();
-    formData.append("file", file);
+    setUploadMessage(`Analyse de ${selectedFiles.length} fichier(s)...`);
 
     try {
-      const response = await fetch("/api/upload", { method: "POST", body: formData });
-      if (response.ok) {
-        setUploadMessage("✅ Mémorisé !");
-        fetchHistory(); 
-      } else {
-        const errData = await response.json();
-        setUploadMessage("❌ " + (errData.error || "Erreur"));
+      // On envoie les fichiers un par un à notre API existante
+      for (const file of selectedFiles) {
+        const formData = new FormData();
+        formData.append("file", file);
+        
+        const response = await fetch("/api/upload", { method: "POST", body: formData });
+        if (!response.ok) {
+          console.error(`Erreur d'upload pour ${file.name}`);
+        }
       }
+      setUploadMessage("✅ Fichiers mémorisés !");
+      fetchHistory(); 
     } catch (e) {
-      setUploadMessage("❌ Erreur serveur");
+      setUploadMessage("❌ Erreur serveur lors de l'envoi");
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -286,7 +287,7 @@ export default function Home() {
           {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
           {isUploading ? "Analyse..." : "Ajouter un fichier"}
         </button>
-        <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileChange} />
+        <input type="file" multiple className="hidden" ref={fileInputRef} onChange={handleFileChange} />
 
         <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar">
           <p className="text-[11px] text-neutral-600 font-bold px-2 mb-4">BIBLIOTHÈQUE</p>

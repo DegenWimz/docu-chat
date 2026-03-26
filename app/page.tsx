@@ -222,6 +222,10 @@ export default function Home() {
 
     const userMsg = input;
     setInput("");
+    
+    // NOUVEAU : On sauvegarde l'historique tel qu'il est AVANT d'ajouter la nouvelle question
+    const currentHistory = [...messages];
+    
     setMessages((prev) => [...prev, { role: "user", text: userMsg }]);
     setIsLoadingChat(true);
 
@@ -231,7 +235,12 @@ export default function Home() {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMsg, fileId: selectedFileId }),
+        // NOUVEAU : On injecte l'historique dans la requête
+        body: JSON.stringify({ 
+          message: userMsg, 
+          fileId: selectedFileId,
+          history: currentHistory 
+        }),
       });
 
       if (!response.body) return;

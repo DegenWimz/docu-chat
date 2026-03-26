@@ -13,9 +13,10 @@ function normalize(vector: number[]) {
 
 export async function POST(request: Request) {
   try {
-    const { message, fileId } = await request.json();
+    // 1. NOUVEAU : On récupère l'historique envoyé par le frontend (tableau vide par défaut)
+    const { message, fileId, history = [] } = await request.json();
 
-    // 1. Authentification Supabase via les cookies
+    // Authentification Supabase via les cookies
     const cookieStore = await cookies();
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -42,7 +43,7 @@ export async function POST(request: Request) {
     
     const queryEmbedding = normalize(embeddingResult.embedding.values);
 
-    // 3. Recherche des documents les plus pertinents dans la base de données
+    // 3. Recherche des documents les plus pertinents
     const { data: documents, error } = await supabase.rpc('match_documents', {
       query_embedding: queryEmbedding,
       match_threshold: 0.3,
@@ -55,34 +56,44 @@ export async function POST(request: Request) {
 
     const contextText = documents?.length 
       ? documents.map((doc: any) => doc.content).join("\n---\n") 
-      : "Aucun contexte trouvé.";
+      : "Aucun contexte trouvé dans les documents.";
 
-    // 4. Préparation du modèle Gemini 3.1 Flash Lite
-    const chatModel = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
+    // 4. NOUVEAU : Formatage de l'historique pour l'API Gemini
+    // L'API attend les rôles "user" et "model" (pas "ai")
+    const formattedHistory = history.map((msg: any) => ({
+      role: msg.role === 'ai' ? 'model' : 'user',
+      parts: [{ text: msg.text }]
+    }));
+
+    // 5. Préparation du modèle Gemini 3.1 Flash Lite avec INSTRUCTIONS SYSTÈME
+    const chatModel = genAI.getGenerativeModel({ 
+      model: "gemini-3.1-flash-lite-preview",
+      systemInstruction: "Tu es DocuChat. Tu dois répondre en tenant compte de la conversation précédente ET du nouveau contexte documentaire fourni à chaque message. Reste professionnel."
+    });
     
+    // NOUVEAU : Initialisation de la session avec mémoire
+    const chatSession = chatModel.startChat({
+      history: formattedHistory,
+    });
+    
+    // Le prompt n'a plus besoin de rappeler qu'il est DocuChat, on lui passe juste la Data
     const prompt = `
-      Tu es DocuChat. Réponds à la QUESTION en utilisant le CONTEXTE suivant.
-      Le contexte provient des documents personnels de l'utilisateur.
-      
-      CONTEXTE :
+      [CONTEXTE DOCUMENTAIRE FRAIS (Issu de la recherche RAG)] :
       ${contextText}
 
-      QUESTION :
+      [NOUVELLE QUESTION DE L'UTILISATEUR] :
       ${message}
     `;
 
-    // 5. GÉNÉRATION EN STREAMING
-    // On utilise generateContentStream au lieu de generateContent
-    const result = await chatModel.generateContentStream(prompt);
+    // 6. GÉNÉRATION EN STREAMING (Méthode sendMessageStream)
+    const result = await chatSession.sendMessageStream(prompt);
 
-    // On crée un flux de données (ReadableStream) pour envoyer les mots au fur et à mesure
     const stream = new ReadableStream({
       async start(controller) {
         const encoder = new TextEncoder();
         try {
           for await (const chunk of result.stream) {
             const chunkText = chunk.text();
-            // On envoie chaque petit morceau de texte au navigateur
             controller.enqueue(encoder.encode(chunkText));
           }
         } catch (err) {
@@ -93,7 +104,6 @@ export async function POST(request: Request) {
       },
     });
 
-    // On renvoie le flux avec le bon type de contenu
     return new Response(stream, {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',

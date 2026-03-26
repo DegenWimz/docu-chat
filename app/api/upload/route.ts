@@ -1,19 +1,9 @@
 import { NextResponse } from 'next/server';
-import { extractText } from 'unpdf';
-import mammoth from 'mammoth';
-import * as xlsx from 'xlsx';
-import { GoogleGenerativeAI, TaskType } from "@google/generative-ai";
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENERATIVE_AI_API_KEY!);
-
-function normalize(vector: number[]) {
-  const magnitude = Math.sqrt(vector.reduce((acc, val) => acc + val * val, 0));
-  return vector.map(val => val / magnitude);
-}
-
 export async function POST(request: Request) {
+  console.log("=== 🔍 DÉBUT DIAGNOSTIC UPLOAD ===");
   try {
     const cookieStore = await cookies();
     const supabase = createServerClient(
@@ -27,95 +17,46 @@ export async function POST(request: Request) {
       }
     );
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: "Non autorisé" }, { status: 401 });
+    // 1. Log des Headers pour voir si le navigateur ment sur la taille
+    const contentLength = request.headers.get('content-length');
+    const contentType = request.headers.get('content-type');
+    console.log(`[HTTP] Content-Length annoncé: ${contentLength} bytes`);
+    console.log(`[HTTP] Content-Type: ${contentType}`);
 
     const formData = await request.formData();
     const file = formData.get('file') as File;
-    // NOUVEAU : On récupère l'identifiant du Space envoyé par le frontend
-    const spaceId = formData.get('spaceId') as string | null; 
 
-    if (!file) return NextResponse.json({ error: "Pas de fichier" }, { status: 400 });
+    if (!file) {
+      console.error("[ERREUR] Aucun fichier trouvé dans le FormData");
+      return NextResponse.json({ error: "Pas de fichier" }, { status: 400 });
+    }
 
-    const fileId = crypto.randomUUID();
-    const fileName = file.name;
+    // 2. Analyse de l'objet File avant lecture
+    console.log(`[FILE OBJECT] Nom: ${file.name}`);
+    console.log(`[FILE OBJECT] Taille annoncée: ${file.size} bytes`);
+    console.log(`[FILE OBJECT] Type MIME: ${file.type}`);
+
+    // 3. Lecture du buffer réel
     const buffer = await file.arrayBuffer();
-    
-    // On récupère l'extension pour choisir le bon outil
-    const extension = fileName.split('.').pop()?.toLowerCase() || '';
-    const mimeType = file.type;
-    
-    let fullText = "";
+    console.log(`[BUFFER] Taille réelle reçue en mémoire: ${buffer.byteLength} bytes`);
 
-    // --- 🔀 AIGUILLAGE UNIVERSEL ---
-    if (mimeType === "application/pdf" || extension === "pdf") {
-      const { text } = await extractText(new Uint8Array(buffer));
-      fullText = Array.isArray(text) ? text.join(' ') : text;
-
-    } else if (mimeType.startsWith("image/")) {
-      const visionModel = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
-      const base64Data = Buffer.from(buffer).toString("base64");
-      const result = await visionModel.generateContent([
-        "Extrais et retranscris tout le texte visible dans cette image. Décris aussi le contexte.",
-        { inlineData: { data: base64Data, mimeType: file.type } }
-      ]);
-      fullText = result.response.text();
-
-    } else if (extension === "docx") {
-      // Lecture Word
-      const result = await mammoth.extractRawText({ buffer: Buffer.from(buffer) });
-      fullText = result.value;
-
-    } else if (extension === "xlsx" || extension === "csv" || mimeType.includes("spreadsheet")) {
-      // Lecture Excel / CSV
-      const workbook = xlsx.read(buffer, { type: 'buffer' });
-      const sheetNames = workbook.SheetNames;
-      for (const sheetName of sheetNames) {
-        const sheet = workbook.Sheets[sheetName];
-        fullText += xlsx.utils.sheet_to_csv(sheet) + "\n";
-      }
-
-    } else {
-      // Pour tout le reste (txt, md, js, py, css, html, json...)
-      fullText = Buffer.from(buffer).toString("utf-8");
+    if (buffer.byteLength === 0) {
+      console.error("[CRITIQUE] Le buffer est VIDE (0 octets). Le fichier n'a pas été transmis.");
+      return NextResponse.json({ 
+        error: "Le fichier est arrivé vide sur le serveur.",
+        details: { announced: file.size, received: buffer.byteLength }
+      }, { status: 400 });
     }
 
-    if (!fullText || fullText.trim().length === 0) {
-      return NextResponse.json({ error: "Le fichier semble vide ou illisible." }, { status: 400 });
-    }
+    console.log("=== ✅ FIN DIAGNOSTIC (Fichier reçu avec succès) ===");
+    return NextResponse.json({ 
+      success: true, 
+      log: "Diagnostic terminé, fichier bien reçu.",
+      receivedBytes: buffer.byteLength 
+    });
 
-    // --- ✂️ DÉCOUPAGE ET MÉMORISATION ---
-    const chunks = fullText.match(/[\s\S]{1,1000}/g) || [];
-    const model = genAI.getGenerativeModel({ model: "gemini-embedding-2-preview" });
-
-    for (const chunk of chunks) {
-      if (!chunk.trim()) continue;
-
-      const result = await model.embedContent({
-        content: { parts: [{ text: chunk }], role: 'user' },
-        taskType: TaskType.RETRIEVAL_DOCUMENT,
-        outputDimensionality: 768,
-      } as any);
-
-      const embedding = normalize(result.embedding.values);
-
-      const { error } = await supabase.from('documents').insert({
-        content: chunk,
-        embedding: embedding,
-        user_id: user.id,
-        file_id: fileId,
-        file_name: fileName,
-        space_id: spaceId || null, // NOUVEAU : On attache le chunk au Space (ou null si vue globale)
-        metadata: { fileName }
-      });
-
-      if (error) throw error;
-    }
-
-    return NextResponse.json({ success: true, message: `Document mémorisé.` });
-
-  } catch (error) {
-    console.error("Erreur Upload:", error);
-    return NextResponse.json({ error: "Erreur d'upload" }, { status: 500 });
+  } catch (error: any) {
+    console.error(`[ERREUR CRITIQUE] ${error.message}`);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

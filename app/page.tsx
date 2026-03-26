@@ -180,33 +180,16 @@ export default function Home() {
     if (selectedFiles.length === 0) return;
 
     setIsUploading(true);
-    setUploadMessage(`Synchronisation Cloud en cours...`);
+    setUploadMessage(`Envoi de ${selectedFiles.length} fichier(s)...`);
 
     try {
       for (const file of selectedFiles) {
-        // 1. On force la synchronisation via FileReader (plus robuste pour OneDrive)
-        const content = await new Promise<ArrayBuffer>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as ArrayBuffer);
-          reader.onerror = reject;
-          reader.readAsArrayBuffer(file);
-        });
-
-        if (content.byteLength === 0) {
-          throw new Error(`Le fichier "${file.name}" est encore en ligne. Ouvrez-le une fois pour le synchroniser.`);
-        }
-
-        // 2. Micro-pause (300ms) pour laisser l'OS gérer le flux de données
-        await new Promise(resolve => setTimeout(resolve, 300));
-
+        // MÉTHODE DIRECTE : Pas de arrayBuffer, pas de FileReader.
+        // On envoie l'objet 'file' brut. Le navigateur gère le streaming.
         const formData = new FormData();
-        // On envoie le Blob créé à partir du contenu synchronisé
-        const blob = new Blob([content], { type: file.type });
-        formData.append("file", blob, file.name);
+        formData.append("file", file); 
         
-        if (selectedSpaceId) {
-          formData.append("spaceId", selectedSpaceId);
-        }
+        if (selectedSpaceId) formData.append("spaceId", selectedSpaceId);
         
         const response = await fetch("/api/upload", { 
           method: "POST", 
@@ -217,13 +200,15 @@ export default function Home() {
           const errData = await response.json();
           throw new Error(errData.error || "Erreur serveur");
         }
+
+        // Un léger délai pour éviter de saturer la file d'attente réseau
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
       
-      setUploadMessage("✅ Tout est synchronisé !");
+      setUploadMessage("✅ Documents envoyés !");
       fetchHistory(); 
     } catch (e: any) {
       setUploadMessage(`❌ ${e.message}`);
-      console.error("Détail upload:", e);
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";

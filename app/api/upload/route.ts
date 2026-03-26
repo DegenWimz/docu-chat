@@ -38,7 +38,11 @@ export async function POST(request: Request) {
 
     const fileId = crypto.randomUUID();
     const fileName = file.name;
-    const buffer = await file.arrayBuffer();
+    
+    // CORRECTION : On récupère le buffer et on en fait immédiatement une version Buffer Node.js
+    // Cela évite que la mémoire soit "détachée" lors de l'utilisation par unpdf ou mammoth.
+    const arrayBuffer = await file.arrayBuffer();
+    const safeBuffer = Buffer.from(arrayBuffer);
     
     const extension = fileName.split('.').pop()?.toLowerCase() || '';
     const mimeType = file.type;
@@ -46,39 +50,37 @@ export async function POST(request: Request) {
     let fullText = "";
 
     // --- 🔀 AIGUILLAGE UNIVERSEL ---
-    if (mimeType === "application/pdf" || extension === "pdf") {
-      const { text } = await extractText(new Uint8Array(buffer));
-      fullText = Array.isArray(text) ? text.join(' ') : text;
+    try {
+      if (mimeType === "application/pdf" || extension === "pdf") {
+        // On utilise une copie (slice) pour ne pas corrompre le buffer original
+        const { text } = await extractText(new Uint8Array(safeBuffer.slice()));
+        fullText = Array.isArray(text) ? text.join(' ') : text;
 
-    } else if (mimeType.startsWith("image/")) {
-      const visionModel = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
-      const base64Data = Buffer.from(buffer).toString("base64");
-      const result = await visionModel.generateContent([
-        "Extrais tout le texte visible dans cette image. Sois exhaustif.",
-        { inlineData: { data: base64Data, mimeType: file.type } }
-      ]);
-      fullText = result.response.text();
+      } else if (extension === "docx") {
+        const result = await mammoth.extractRawText({ buffer: safeBuffer });
+        fullText = result.value;
 
-    } else if (extension === "docx") {
-      const result = await mammoth.extractRawText({ buffer: Buffer.from(buffer) });
-      fullText = result.value;
-
-    } else if (extension === "xlsx" || extension === "csv" || mimeType.includes("spreadsheet")) {
-      const workbook = xlsx.read(buffer, { type: 'buffer' });
-      const sheetNames = workbook.SheetNames;
-      for (const sheetName of sheetNames) {
-        const sheet = workbook.Sheets[sheetName];
-        fullText += xlsx.utils.sheet_to_csv(sheet) + "\n";
+      } else if (extension === "xlsx" || extension === "csv" || mimeType.includes("spreadsheet")) {
+        const workbook = xlsx.read(safeBuffer, { type: 'buffer' });
+        const sheetNames = workbook.SheetNames;
+        for (const sheetName of sheetNames) {
+          const sheet = workbook.Sheets[sheetName];
+          fullText += xlsx.utils.sheet_to_csv(sheet) + "\n";
+        }
+      } else {
+        fullText = safeBuffer.toString("utf-8");
       }
-    } else {
-      fullText = Buffer.from(buffer).toString("utf-8");
+    } catch (e) {
+      console.log("[Extraction] Erreur classique, le fallback IA prendra le relais.");
     }
 
-    // --- 🛡️ FILET DE SÉCURITÉ OCR (Même modèle que toi) ---
-    // Si l'extraction classique échoue (PDF scanné), on utilise ton modèle fétiche
+    // --- 🛡️ FILET DE SÉCURITÉ OCR (Gemini 3.1 Flash Lite) ---
     if (!fullText || fullText.trim().length < 20) {
+      console.log(`[OCR] Activation pour ${fileName}`);
       const fallbackModel = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
-      const base64Data = Buffer.from(buffer).toString("base64");
+      
+      // On utilise le safeBuffer qui est garanti intact ici
+      const base64Data = safeBuffer.toString("base64");
       
       const result = await fallbackModel.generateContent([
         "Analyse ce document (OCR) et retranscris tout son contenu textuel proprement. Sois précis sur les chiffres.",
@@ -98,13 +100,13 @@ export async function POST(request: Request) {
     for (const chunk of chunks) {
       if (!chunk.trim()) continue;
 
-      const result = await embeddingModel.embedContent({
+      const embResult = await embeddingModel.embedContent({
         content: { parts: [{ text: chunk }], role: 'user' },
         taskType: TaskType.RETRIEVAL_DOCUMENT,
         outputDimensionality: 768,
       } as any);
 
-      const embedding = normalize(result.embedding.values);
+      const embedding = normalize(embResult.embedding.values);
 
       const { error } = await supabase.from('documents').insert({
         content: chunk,
@@ -121,8 +123,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ success: true });
 
-  } catch (error) {
+  } catch (error: any) {
     console.error("Erreur Upload:", error);
-    return NextResponse.json({ error: "Erreur d'upload" }, { status: 500 });
+    return NextResponse.json({ error: "Erreur technique d'upload" }, { status: 500 });
   }
 }

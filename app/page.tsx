@@ -19,12 +19,19 @@ import {
   Sparkles,
   Pencil,
   Check,
-  Download // NOUVEAU: icône pour l'export
+  Download,
+  Folder // NOUVEAU: icône pour les espaces
 } from 'lucide-react';
 
 interface FileHistory {
   file_id: string;
   file_name: string;
+}
+
+// NOUVEAU : Interface pour les espaces
+interface Space {
+  id: string;
+  name: string;
 }
 
 export default function Home() {
@@ -41,6 +48,12 @@ export default function Home() {
   const [files, setFiles] = useState<FileHistory[]>([]);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null); 
   
+  // NOUVEAU : États pour les Espaces (Workspaces)
+  const [spaces, setSpaces] = useState<Space[]>([]);
+  const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
+  const [isCreatingSpace, setIsCreatingSpace] = useState(false);
+  const [newSpaceName, setNewSpaceName] = useState("");
+
   // États d'édition
   const [editingFileId, setEditingFileId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -51,7 +64,7 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [isLoadingChat, setIsLoadingChat] = useState(false);
   
-  // NOUVEAU: État pour le chargement du PDF
+  // État pour le chargement du PDF
   const [isExporting, setIsExporting] = useState(false);
 
   useEffect(() => {
@@ -60,7 +73,7 @@ export default function Home() {
       if (!session) router.push('/login');
       else {
         setUser(session.user);
-        fetchHistory();
+        fetchSpaces(); // NOUVEAU : On charge d'abord les espaces
       }
     };
     checkSession();
@@ -73,8 +86,49 @@ export default function Home() {
     return () => subscription.unsubscribe();
   }, [router, supabase]);
 
+  // NOUVEAU : Fonction pour récupérer les espaces
+  const fetchSpaces = async () => {
+    const { data } = await supabase.from('spaces').select('*').order('created_at', { ascending: false });
+    if (data) {
+      setSpaces(data);
+      // Sélectionner le premier espace par défaut s'il existe
+      if (data.length > 0 && !selectedSpaceId) {
+        setSelectedSpaceId(data[0].id);
+      }
+    }
+  };
+
+  // NOUVEAU : Dès que l'espace change, on recharge les documents associés
+  useEffect(() => {
+    if (user) {
+      setSelectedFileId(null); // On désélectionne le fichier actif
+      fetchHistory();
+    }
+  }, [selectedSpaceId, user]);
+
+  // NOUVEAU : Création d'un espace
+  const handleCreateSpace = async () => {
+    if (!newSpaceName.trim()) return;
+    const { data, error } = await supabase.from('spaces').insert({ name: newSpaceName, user_id: user.id }).select();
+    if (!error && data) {
+      setSpaces([data[0], ...spaces]);
+      setSelectedSpaceId(data[0].id);
+      setNewSpaceName("");
+      setIsCreatingSpace(false);
+    }
+  };
+
+  // MODIFIÉ : Filtre les documents en fonction de l'espace sélectionné
   const fetchHistory = async () => {
-    const { data } = await supabase.from('documents').select('file_id, file_name').order('id', { ascending: false });
+    let query = supabase.from('documents').select('file_id, file_name, space_id').order('id', { ascending: false });
+    
+    if (selectedSpaceId) {
+      query = query.eq('space_id', selectedSpaceId);
+    } else {
+      query = query.is('space_id', null);
+    }
+
+    const { data } = await query;
     if (data) {
       const uniqueFiles = data.filter((v, i, a) => a.findIndex(t => t.file_id === v.file_id) === i);
       setFiles(uniqueFiles);
@@ -120,6 +174,7 @@ export default function Home() {
     router.push('/login');
   };
 
+  // MODIFIÉ : Envoi du spaceId lors du téléversement multiple
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(event.target.files || []);
     if (selectedFiles.length === 0) return;
@@ -128,10 +183,10 @@ export default function Home() {
     setUploadMessage(`Analyse de ${selectedFiles.length} fichier(s)...`);
 
     try {
-      // On envoie les fichiers un par un à notre API existante
       for (const file of selectedFiles) {
         const formData = new FormData();
         formData.append("file", file);
+        if (selectedSpaceId) formData.append("spaceId", selectedSpaceId); // NOUVEAU
         
         const response = await fetch("/api/upload", { method: "POST", body: formData });
         if (!response.ok) {
@@ -148,13 +203,11 @@ export default function Home() {
     }
   };
 
-  // NOUVEAU : Fonction d'exportation PDF avec Synthèse
   const handleExportPDF = async () => {
     if (messages.length === 0 || isExporting) return;
     setIsExporting(true);
 
     try {
-      // 1. Demander la synthèse à l'API
       const res = await fetch("/api/synthesize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -162,11 +215,9 @@ export default function Home() {
       });
       const { summary } = await res.json();
 
-      // 2. Créer le document PDF
       const doc = new jsPDF();
       const fileName = selectedFileId ? files.find(f => f.file_id === selectedFileId)?.file_name : "Vue globale";
 
-      // Design du titre
       doc.setFontSize(18);
       doc.setTextColor(40);
       doc.text("Compte-rendu DocuChat", 14, 22);
@@ -176,7 +227,6 @@ export default function Home() {
       doc.text(`Document : ${fileName}`, 14, 30);
       doc.text(`Date : ${new Date().toLocaleDateString()}`, 14, 35);
 
-      // Bloc de synthèse
       doc.setFontSize(14);
       doc.setTextColor(0, 102, 204);
       doc.text("RÉSUMÉ DÉCISIONNEL (IA)", 14, 50);
@@ -186,7 +236,6 @@ export default function Home() {
       const splitSummary = doc.splitTextToSize(summary || "Synthèse indisponible.", 180);
       doc.text(splitSummary, 14, 60);
 
-      // Bloc d'historique avec tableau
       const startY = 60 + (splitSummary.length * 5) + 10;
       doc.setFontSize(14);
       doc.setTextColor(0, 102, 204);
@@ -207,7 +256,6 @@ export default function Home() {
         columnStyles: { 0: { cellWidth: 35 }, 1: { cellWidth: 'auto' } }
       });
 
-      // Téléchargement
       doc.save(`DocuChat_Export_${new Date().getTime()}.pdf`);
     } catch (error) {
       console.error("Erreur Export:", error);
@@ -223,7 +271,6 @@ export default function Home() {
     const userMsg = input;
     setInput("");
     
-    // NOUVEAU : On sauvegarde l'historique tel qu'il est AVANT d'ajouter la nouvelle question
     const currentHistory = [...messages];
     
     setMessages((prev) => [...prev, { role: "user", text: userMsg }]);
@@ -235,10 +282,11 @@ export default function Home() {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // NOUVEAU : On injecte l'historique dans la requête
+        // MODIFIÉ : On injecte l'espace actif pour le filtre RAG
         body: JSON.stringify({ 
           message: userMsg, 
           fileId: selectedFileId,
+          spaceId: selectedSpaceId,
           history: currentHistory 
         }),
       });
@@ -281,31 +329,79 @@ export default function Home() {
     <main className="min-h-screen bg-neutral-950 text-neutral-50 flex font-sans">
       
       <aside className="w-80 border-r border-neutral-800 bg-neutral-900/40 flex flex-col p-6">
-        <div className="mb-10">
+        <div className="mb-8">
           <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent flex items-center gap-2">
             <MessageSquare className="text-blue-500 w-6 h-6" /> DocuChat
           </h1>
           <p className="text-[10px] text-neutral-500 uppercase tracking-widest mt-1 font-bold">Vibe Coder Edition</p>
         </div>
 
+        {/* NOUVEAU : GESTION DES ESPACES */}
+        <div className="mb-6 bg-neutral-900/60 p-3 rounded-2xl border border-neutral-800/50">
+          <div className="flex items-center justify-between mb-3 px-1">
+            <p className="text-[11px] text-neutral-400 font-bold uppercase tracking-tighter flex items-center gap-2">
+              <Folder className="w-3.5 h-3.5" /> Workspaces
+            </p>
+            <button 
+              onClick={() => setIsCreatingSpace(!isCreatingSpace)} 
+              className="text-blue-400 hover:text-blue-300 transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          </div>
+          
+          {isCreatingSpace && (
+            <div className="flex items-center gap-2 mb-3">
+              <input 
+                type="text" 
+                value={newSpaceName} 
+                onChange={e => setNewSpaceName(e.target.value)} 
+                onKeyDown={e => e.key === 'Enter' && handleCreateSpace()} 
+                placeholder="Nom du dossier..." 
+                className="flex-1 bg-neutral-950 text-xs px-3 py-2 rounded-xl border border-neutral-700 outline-none text-white focus:border-blue-500 transition-all" 
+                autoFocus 
+              />
+              <button 
+                onClick={handleCreateSpace} 
+                className="text-emerald-400 hover:bg-emerald-400/10 p-2 rounded-lg transition-colors"
+              >
+                <Check className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          <div className="relative">
+            <select 
+              value={selectedSpaceId || ""} 
+              onChange={(e) => setSelectedSpaceId(e.target.value || null)}
+              className="w-full bg-neutral-950 text-neutral-300 text-xs font-medium rounded-xl px-3 py-2.5 outline-none border border-neutral-800 focus:border-blue-500/50 appearance-none cursor-pointer"
+            >
+              <option value="">Général (Sans espace)</option>
+              {spaces.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
         <button 
           onClick={() => fileInputRef.current?.click()}
           disabled={isUploading}
-          className="w-full mb-8 py-3 px-4 bg-blue-600 hover:bg-blue-500 disabled:bg-neutral-800 rounded-2xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-900/20"
+          className="w-full mb-6 py-3 px-4 bg-blue-600 hover:bg-blue-500 disabled:bg-neutral-800 rounded-2xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-900/20"
         >
           {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-          {isUploading ? "Analyse..." : "Ajouter un fichier"}
+          {isUploading ? "Analyse..." : "Ajouter au Workspace"}
         </button>
         <input type="file" multiple className="hidden" ref={fileInputRef} onChange={handleFileChange} />
 
         <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar">
-          <p className="text-[11px] text-neutral-600 font-bold px-2 mb-4">BIBLIOTHÈQUE</p>
+          <p className="text-[11px] text-neutral-600 font-bold px-2 mb-4">DOCUMENTS DU WORKSPACE</p>
           
           <button 
             onClick={() => setSelectedFileId(null)}
             className={`w-full text-left px-4 py-3 rounded-xl text-sm transition-all flex items-center gap-3 ${!selectedFileId ? 'bg-blue-600/10 text-blue-400 border border-blue-900/30' : 'hover:bg-neutral-800/50 text-neutral-400'}`}
           >
-            <Globe className="w-4 h-4" /> Vue globale
+            <Globe className="w-4 h-4" /> Discuter avec tout
           </button>
 
           {files.map((f) => (
@@ -378,14 +474,13 @@ export default function Home() {
             </div>
             <div>
               <h2 className="text-sm font-bold text-neutral-200">
-                {selectedFileId ? files.find(f => f.file_id === selectedFileId)?.file_name : "Intelligence Artificielle"}
+                {selectedFileId ? files.find(f => f.file_id === selectedFileId)?.file_name : (selectedSpaceId ? spaces.find(s => s.id === selectedSpaceId)?.name : "Intelligence Artificielle")}
               </h2>
               <p className="text-[10px] text-neutral-500 font-medium">Modèle Gemini 3.1 Flash Lite</p>
             </div>
           </div>
           
           <div className="flex items-center gap-4">
-            {/* NOUVEAU : Bouton d'exportation PDF */}
             {messages.length > 0 && (
               <button 
                 onClick={handleExportPDF}
@@ -404,8 +499,8 @@ export default function Home() {
           {messages.length === 0 && (
             <div className="h-full flex flex-col items-center justify-center text-center opacity-30">
               <div className="w-20 h-20 bg-neutral-900 rounded-3xl flex items-center justify-center text-4xl mb-6 shadow-inner">📂</div>
-              <h3 className="text-lg font-bold">Prêt pour l'analyse</h3>
-              <p className="text-sm max-w-xs mt-2">Choisissez un document ou posez une question globale sur votre savoir.</p>
+              <h3 className="text-lg font-bold">Workspace prêt</h3>
+              <p className="text-sm max-w-xs mt-2">Posez une question sur les documents de cet espace ou choisissez un fichier précis.</p>
             </div>
           )}
 
@@ -454,7 +549,7 @@ export default function Home() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-              placeholder={selectedFileId ? "Interroger ce document..." : "Interroger ma bibliothèque..."}
+              placeholder={selectedFileId ? "Interroger ce document..." : "Interroger le Workspace..."}
               className="flex-1 bg-transparent border-none px-6 py-4 text-sm focus:outline-none placeholder:text-neutral-600"
             />
             <button 

@@ -13,8 +13,8 @@ function normalize(vector: number[]) {
 
 export async function POST(request: Request) {
   try {
-    // 1. NOUVEAU : On récupère l'historique envoyé par le frontend (tableau vide par défaut)
-    const { message, fileId, history = [] } = await request.json();
+    // 1. NOUVEAU : On récupère l'historique et le spaceId envoyés par le frontend
+    const { message, fileId, spaceId, history = [] } = await request.json();
 
     // Authentification Supabase via les cookies
     const cookieStore = await cookies();
@@ -43,13 +43,14 @@ export async function POST(request: Request) {
     
     const queryEmbedding = normalize(embeddingResult.embedding.values);
 
-    // 3. Recherche des documents les plus pertinents
+    // 3. Recherche des documents les plus pertinents (AVEC FILTRE SPACE_ID)
     const { data: documents, error } = await supabase.rpc('match_documents', {
       query_embedding: queryEmbedding,
       match_threshold: 0.3,
       match_count: 5,
       filter_user_id: user.id,
-      filter_file_id: fileId
+      filter_file_id: fileId,
+      filter_space_id: spaceId || null // Injection du cloisonnement B2B
     });
 
     if (error) throw error;

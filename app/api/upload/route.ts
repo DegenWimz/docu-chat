@@ -32,6 +32,9 @@ export async function POST(request: Request) {
 
     const formData = await request.formData();
     const file = formData.get('file') as File;
+    // NOUVEAU : On récupère l'identifiant du Space envoyé par le frontend
+    const spaceId = formData.get('spaceId') as string | null; 
+
     if (!file) return NextResponse.json({ error: "Pas de fichier" }, { status: 400 });
 
     const fileId = crypto.randomUUID();
@@ -74,7 +77,6 @@ export async function POST(request: Request) {
 
     } else {
       // Pour tout le reste (txt, md, js, py, css, html, json...)
-      // On convertit directement les octets en texte
       fullText = Buffer.from(buffer).toString("utf-8");
     }
 
@@ -103,6 +105,7 @@ export async function POST(request: Request) {
         user_id: user.id,
         file_id: fileId,
         file_name: fileName,
+        space_id: spaceId || null, // NOUVEAU : On attache le chunk au Space (ou null si vue globale)
         metadata: { fileName }
       });
 

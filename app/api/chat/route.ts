@@ -58,8 +58,8 @@ export async function POST(request: Request) {
 
     const { data: documents, error: rpcError } = await supabase.rpc('match_documents', {
       query_embedding: queryEmbedding,
-      match_threshold: 0.1, // MODIFIÉ : Seuil de tolérance très bas pour ratisser large
-      match_count: 50,      // MODIFIÉ : On passe de 5 à 50 extraits récupérés !
+      match_threshold: 0.65, // MODIFIÉ : Seuil de tolérance élevé pour plus de précision
+      match_count: 8,      // MODIFIÉ : On passe de 50 à 8 extraits récupérés !
       filter_user_id: user.id,
       filter_space_ids: allowedSpaceIds.length > 0 ? allowedSpaceIds : null 
     });
